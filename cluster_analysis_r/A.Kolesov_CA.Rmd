@@ -1,0 +1,441 @@
+---
+title: "Cluster Times HE"
+author: "Anatoliy Kolesov"
+date: "`r format(Sys.time(), '%d %m %Y')`"
+output: 
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: vignette
+    df_print: kable
+    
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(V8)
+library(jsonlite)
+library(psych)
+library(kableExtra)
+library(ggplot2)
+library(ggthemes)
+library(patchwork)
+library(factoextra)
+library(cluster)
+```
+
+```{r include=FALSE}
+college_json2021 <- fromJSON(paste0(
+  'https://www.timeshighereducation.com/sites/default/files/the_data_rankings/', 
+  'world_university_rankings_2021_0__fa224219a267a5b9c4287386a97c70ea.json'))
+```
+
+
+```{r include=FALSE}
+college_2021 <- college_json2021$data
+head(college_2021)
+```
+
+
+```{r include=FALSE}
+describe(college_2021) %>% 
+  knitr::kable()
+(college_2021$stats_female_male_ratio)[1] # split the 1st part into 'female_share'
+(college_2021$stats_pc_intl_students)[1] # get rid of % sign
+(college_2021$stats_number_students)[1] # get rid of commas
+```
+
+
+```{r include=FALSE}
+college_2021 <- college_2021 %>% 
+  mutate(stats_female_share = as.numeric(str_match(college_2021$stats_female_male_ratio, "^\\d{1,2}")))
+college_2021[1:6,"stats_female_share"]
+```
+
+```{r include=FALSE}
+college_2021 <- college_2021 %>% 
+  mutate(stats_pc_intl_students = as.numeric(str_replace(stats_pc_intl_students, "%", "")))
+college_2021[1:6,"stats_pc_intl_students"]
+```
+
+```{r include=FALSE}
+college_2021 <- college_2021 %>% 
+  mutate(stats_number_students = str_replace(stats_number_students, ",", ""))
+college_2021[1:6, "stats_number_students"]
+```
+
+
+```{r include=FALSE}
+# turn 'apply_link' to a logical vector:
+college_2021 <- college_2021 %>% 
+  mutate(ref_link = if_else(is.na(apply_link), FALSE, TRUE))
+```
+
+
+
+```{r include=FALSE}
+df <- college_2021
+#str(df)
+tofa <- c("rank", 
+          "scores_overall_rank",
+          "scores_teaching_rank",
+          "scores_research_rank",
+          "scores_citations_rank",
+          "scores_industry_income_rank",
+          "scores_international_outlook_rank",
+          "record_type",
+          "member_level",
+          "location",
+          "nid")
+
+for (i in tofa){
+  df[, i] <- as.factor(df[, i])
+}
+```
+
+
+```{r include=FALSE}
+tonu <- c("scores_overall",
+          "scores_teaching",
+          "scores_research",
+          "scores_citations",
+          "scores_industry_income",
+          "scores_international_outlook",
+          "stats_number_students",
+          "stats_student_staff_ratio",
+          "stats_pc_intl_students",
+          "stats_female_share")
+for (i in tonu){
+  df[ , i] <- as.numeric(df[ , i])
+}
+options(scipen = 999)
+describe(df) %>% 
+  knitr::kable() # all variable must have around 1500 values
+```
+
+
+# Introduction
+
+The goal of this report is to cluster, justify and explain the data from the **Times Higher Education 2021 rating** for universities. The results of the analysis could be used for matching prospective students to certain types of universities to ease the selection process for those students and help universities attract more students that are more motivated to study in this particular university. 
+
+# Descriptive statistics
+
+We can start by looking at what variables are there in this dataset:
+
+```{r}
+summary(df)
+```
+
+There is a great number of variables in the dataset, but the most actionable and meaningful variables that could be used for clustering and then for targeting are probably the scores themselves, some statistics (like % of international students), offered courses and countries where the universities are located. 
+
+For the courses and countries it would be reasonable to suggest that people would probably be limited in their choice (previous education in some specific domain area) or would have some preferences already (want to study only in Europe), so they should probably be considered separately from general clustering by performance-based ratings.
+
+For some reason the overall score of a university is present only for the top 200 universities, so it probably should not be used for clustering either. Luckily, this score represents a weighted sum of other scores, so hopefully not using this score would still provide meaningful results.
+
+Additionally, since the clusters are needed to target prospective students I would argue that the **citations** and **industry income** scores are probably less important for students. They are not directly affected by neither the number of citations of professors from a university nor by the amount of money university makes by doing research for business. 
+
+From the THE website I have also learned that the income a university is making out of its research is included in both research and industry income scores (with different weights), so it would be reasonable to use only one of the scores in clustering and research is probably more relevant for students since they can participate in it directly.   
+
+Now let's stick to using only the "Teaching", "Research", "International outlook" scores, the "Number of students" and "% of international students" statistics 
+
+Firstly we can take a look at the scores and some statistics that could be used for clustering.
+
+
+```{r}
+dfnum <- df %>% dplyr::select(scores_teaching, scores_research, scores_international_outlook, stats_number_students, stats_pc_intl_students)
+
+dfnum <- na.omit(dfnum)
+summary(dfnum)
+
+```
+
+Out of the scores Teaching and Research are skewed to the right the most, meaning that  universities usually score lower in these aspects. None of the universities have full 100 points for any one of these 2 scores.
+
+
+```{r}
+p1 <- ggplot(df, aes(x = scores_teaching, y = (..count..)/sum(..count..))) +
+  geom_histogram(fill = 'steelblue') +
+  xlab("Teaching score") +
+  ylab("Percentage")
+
+```
+
+```{r}
+p2 <- ggplot(df, aes(x = scores_research, y = (..count..)/sum(..count..))) +
+  geom_histogram(fill = 'steelblue') +
+  xlab("Research score") +
+  ylab("Percentage")
+
+```
+
+```{r}
+p <- p1 + p2
+
+p + plot_annotation(
+  title = 'Teaching & Research scores distribution'
+)
+```
+
+The scores for  international outlook is skewed to the right as well, but the distribution is more balanced and some universities have the maximum 100 points for this score.
+
+```{r}
+ggplot(df, aes(x = scores_international_outlook, y = (..count..)/sum(..count..))) +
+  geom_histogram(fill = 'steelblue') +
+  xlab("International outlook score") +
+  ylab("Percentage") +
+  ggtitle("International outlook score distribution")
+
+
+```
+
+
+Before proceeding to cluster analysis with these 5 variables it is necessary to standardise them as the number of students is just the total number ranging from 500 to 500k+ - if not standardised it will have much larger influence on the way the observations are split into clusters.
+
+```{r}
+dfstd <- dfnum %>% scale() %>% as.data.frame()
+lapply(dfstd, var)
+```
+
+Now all of the variables are standardised and we can proceed to cluster analysis.
+
+# Defining the number of clusters
+
+The first method that will be used to estimate how many clusters should be there is an elbow plot. 
+
+```{r}
+fviz_nbclust(dfstd, kmeans, method = "wss")
+```
+
+The elbow plot shows that trying 2 clusters is the best option, but from the plot it looks like trying 3 or 4 clusters would be possible as well (the within-sum-of-squares decreases a little for 3 or 4 clusters, but it could make more sense theoretically).
+
+We can try another method for estimating the number of clusters based on the silhouette width statistic.
+
+```{r}
+fviz_nbclust(dfstd, kmeans, method = "silhouette")
+```
+
+The higher the average silhouette width the better the clustering. From the plot it can be seen that the best option in terms of silhouette width is with 2 clusters. However, using 4 clusters provides better avg. silhouette width than 3 clusters, so cluster analysis with 4 clusters will be our plan B.
+
+# Clustering with k-means
+
+The first clustering is using k-means method, there will be 2 solution - with 2 and 4 clusters.
+
+The k-means solution with 2 clusters can be visualised in the following plot:
+
+```{r}
+clus2 <- kmeans(dfstd, 2, nstart = 13)
+
+fviz_cluster(clus2, data = dfstd,
+   palette = "Set2", ggtheme = theme_hc())
+```
+
+
+Visually it does not make much sense because the plot is 2-dimensional and it's hard to see the actual distance between the clusters, so we can turn to some descriptive statistics of the clusters. Firstly we can see how many observations were assigned to each cluster:
+
+
+```{r}
+dfstd_clus <- dfstd
+
+clusters <- clus2
+dfstd_clus$Cluster <- as.factor(clusters$cluster)
+
+# Look at the distribution of cluster
+kable(table(dfstd_clus$Cluster))%>% 
+  kable_styling(bootstrap_options=c("bordered"), full_width = FALSE)
+
+```
+
+We can see that the 1st cluster has more than twice the number of observations of the 2nd clsters, from the plot we can see that there are a lot of observations in the bottom right corner close to each other, so it makes sense.
+
+```{r}
+clus_avg <- dfstd_clus %>%
+    group_by(dfstd_clus$Cluster) %>%
+    summarize_if(funs(is.numeric), mean) 
+
+clus_avg %>% kable() %>% kable_styling("striped", full_width = F, position = "left")
+```
+
+The table above shows the average standardised values for each variable for each cluster. From this output we can see that generally the 2nd cluster represents more successful universities and probably more "elite" universities - they have higher values for all the scores and the % of international students, but lower average total number of students. The 1st cluster is respectively less successful and more "mass" universities.
+
+Now let's take a look at an alternative solution with 4 clusters:
+
+
+```{r}
+clus4 <- kmeans(dfstd, 4, nstart = 11)
+
+
+fviz_cluster(clus4, data = dfstd,
+   palette = "Set2", ggtheme = theme_hc())
+```
+
+Visually this solution makes a bit more sense to me, as here we can see that if the plot was 3-dimensional clusters 2-4 would be spread around this 3rd dimension, while cluster 1 differs from them on the 2nd dimension.
+
+Now let's see the same summary statistics for these clusters:
+
+```{r}
+dfstd_clus$Cluster2 <- as.factor(clus4$cluster)
+
+# Look at the distribution of clusters
+kable(table(dfstd_clus$Cluster2))%>% 
+  kable_styling(bootstrap_options=c("bordered"), full_width = FALSE)
+
+```
+
+There are only 12 observations in the 1st cluster (much more than in other clusters) which is strange, but from the visualisation this group of universities looks different indeed. We can look at the average values for all the variables for these 4 clusters to see if there is a difference between these 12 universities and others. 
+
+```{r}
+clus_avg2 <- dfstd_clus %>%
+    group_by(dfstd_clus$Cluster2) %>%
+    summarize_if(funs(is.numeric), mean) 
+
+clus_avg2 %>% kable() %>% kable_styling("striped", full_width = F, position = "left")
+```
+
+From this summary it can be concluded that in this clustering the 2nd cluster represents the best universities in terms of teaching and research; 4th cluster represents the most international universities - with the highest international outlook score and the % of international students. The 2nd and the 4th cluster universities are similar in terms of total number of students.
+
+The 1st cluster represents the worst universities which also have the highest total number of students. Probably these are lower-quality mass universities from some populous countries such as China, India (also Indonesia, Mexico, Egypt).
+
+The 3rd cluster from this solution represents just ordinary, mediocre universities that just don't have any distinct features.
+
+I would say that from the real-world perspective this division makes sense, because these 4 groups have some distinct features and would probably attract different students. Clusters 1 and 3 could definitely be merged together as both of them represent lower-quality universities (3-cluster solution would also make sense), but the universities from the 1st cluster have much higher total number of students (they accept more students, but the competition is probably higher as well), so there is a difference in their availability for applicants and they are probably more suitable for some students than others.
+
+We can also look at the within-cluster sum of squares to the cluster centroid for each solution - the lower this value, the more similar are observations in each cluster, the better the clustering solution.
+
+2 clusters:
+
+```{r}
+clus2$withinss
+```
+
+4 clusters:
+
+```{r}
+clus4$withinss
+```
+
+The values for the 4-cluster solution are lower, but the number of observations in the clusters produced by different solution is very different, so we cannot rely solely on this indicator.
+
+We can try using another clustering method and see if it would lead to the same conclusion.
+
+# Agglomerative clustering
+
+For agglomerative cluster solution we will need to count the distance between the observations. Since all the variables are numeric and standardised we will use eucledian distance.
+
+```{r}
+dd <- dist(dfstd, method = 'euclidean')
+
+link_ward <- agnes(dd, method = "ward")
+link_avg <- agnes(dd, method = "average")
+link_complete <- agnes(dd, method = "complete")
+
+```
+
+It is also necessary to decide which hierarchical clustering method (ward, single-link or complete) to use and also check the hypothesis that either 2 or 4 clusters works best for clustering these data.
+
+We can check the hypothesis about the optimal number of clusters through dendrograms, but firslty we need to try drawing 3 dendrograms with 3 different hierarchical clustering methods - the 1st one will be for ward method, the 2nd will be single-link clustering and the 3rd one will be complete-link clustering. 
+
+```{r}
+fviz_dend(link_ward, 
+          show_labels = FALSE, 
+          rect_border = TRUE)
+
+fviz_dend(link_avg, 
+          show_labels = FALSE, 
+          rect_border = TRUE)
+
+fviz_dend(link_complete, 
+          show_labels = FALSE, 
+          rect_border = TRUE)
+
+```
+
+The dendrogram created using ward clustering supports using either 2 or 4 clusters, while single-link and complete-link methods suggest using 2 or 3 clusters - the height of one of the branches drops down significantly right after splitting the data into 2 clusters, while the height of other one does not drop much after splitting again into 2 forming 3 clusters.
+
+We can visualise these solutions made with hierarchical agglomerative clustering as well.
+
+Firstly with 2 clusters:
+
+```{r}
+h_avg_cut <- hcut(dd, k = 2, hc_method = "ward")
+fviz_cluster(h_avg_cut, dfstd, ellipse.type = "convex")
+```
+
+This solution looks the same as the 2-cluster k-means solution, the 1st cluster here represents more successful universities in terms of teaching, research and international outlook. The 2nd cluster essentially represents less successful universities.  
+
+Now to the 4-cluster solution:
+
+```{r}
+h_ward_cut <- hcut(dd, k = 4, hc_method = "ward")
+fviz_cluster(h_ward_cut, dfstd, ellipse.type = "convex")
+```
+
+This solution looks similar to the one done with k-means as well, with the same groups of clusters defined. Both methods, k-means and hierarchical agglomerative clustering come to similar conclusions. 
+
+We can also try visualising the 3-cluster solution:
+
+```{r}
+h_ward_cut <- hcut(dd, k = 3, hc_method = "ward")
+fviz_cluster(h_ward_cut, dfstd, ellipse.type = "convex")
+```
+
+This solution merged clusters 3 and 4 from the previous solution which, again, makes sense because they only difference between them is the average total number of students in these universities, it is fair to say that their overall quality is similar and mediocre.
+
+# Conclusions
+
+I am going to stick with the 4-cluster solution and explain how it could be used in order to match the prospective students to universities.
+
+```{r}
+fviz_cluster(clus4, data = dfstd, ggtheme = theme_hc())
+
+```
+
+### Mediocre, but big (Cluster 1)
+
+These universities are not the best, but they accept the largest number of students, so technically the chances of getting admitted are slightly higher.
+
+Nothing special about studying here, just get your diploma and go on. 
+
+Universities from this group depend on the country - most of them are located in developing countries with populations starting from at least 100 million. You probably would not find such a university in Western Europe.
+
+### The best (not the most international) (Cluster 2)
+
+These universities have the highest teaching and research quality, studying in these universities will probably result in having the best career and/or academic perspectives. 
+
+The competition (and the tuition fees) are probably the highest for these universities, only the best students make their way to study here, but the benefits are great as well.
+
+Prospective students who do not have any remarkable achievements or substantial amount of money should probably consider other options.
+
+These universities are also located in certain countries, usually developed countries where the share of international students is not so big (the US would be a common example). If a student wants to study in one of the best universities in the world, is not from the US and does not mind being national minority then it should not be a problem.
+
+
+### Just mediocre (Cluster 3)
+
+These universities are just average, nothing special, but they are not so big as those from the 1st group.
+
+Students who just want to get some higher education and move on are welcome here. The choice of countries would probably be wider as well, you can find an average university virtually anywhere in the world.
+
+
+### The most international (Cluster 4)
+
+These universities might not be the best in the world (they are okay though), but if a student is looking for an opportunity to study in a very international environment then this is the right choice. 
+
+Universities from this group have a lot of international students and professors and collaborate the most with other institutions internationally.
+
+
+## Concluding comments
+
+The classification above is flexible and could be reduced to 3 (the best, most international and mediocre) or even 2 groups (good and bad) depending on the context and the intended use.
+
+
+
+
+
+---------------------------------------------------------------
