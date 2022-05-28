@@ -1,0 +1,289 @@
+---
+title: "PCA for Times Higher Education University Rating"
+author: "Anatoliy Kolesov"
+date: "`r format(Sys.time(), '%d %m %Y')`"
+output: 
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: vignette
+    df_print: kable
+    
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(psych)
+library(ggthemes)
+library(patchwork)
+library(caret)
+library(corrplot)
+library(pca3d)
+```
+
+```{r}
+#Uploading the data
+data <- read.csv("THE2021 2.csv")
+
+
+data$name <- as.character(data$name)
+
+data$name[data$name == "<U+200B>Shahid Chamran University of Ahvaz"] <- "Shahid Chamran University of Ahvaz"
+
+data$name <- as.factor(data$name)
+```
+
+# Introduction
+
+The goal of this project is to apply Principal Component Analysis (PCA) to the data on the Times Higher Education 2021 rating for universities.
+
+
+# Exploring the data and correlations
+
+Firstly let's explore the data and see what we are dealing with.
+
+```{r}
+str(data)
+```
+
+The dataset consists of 1448 observations (each is a university) with 11 variables. 2 of these variables stand for university name and the name of the country where it is located, the rest are different scores that constitute the rating itself.
+
+```{r}
+summary(data)
+```
+
+The summary table above shows that there is no missing data. It is also worth noting that ~27% of all the universities in this rating are located in 3 countries (USA, Japan, UK) out of 92 in the dataset and ~40% of all the universities in this rating are located in 6 countries (US, Japan, UK, China, India and Brazil). 
+
+As for the scores themselves and some statistics:
+
+* Out of all the 5 scores the score for research has the lowest average value of 23.13 (however with a wide distribution of scores ranging from as low as 7.1 to as high as 99.6). This could mean that either the rating is too harsh for universities or research is generally the least developed aspect for all the universities in this rating (with some exceptions). The score for teaching is a close second with an average of 27.5.
+
+* The number of students at these universities ranges from 557 to 222 000 students which shows that the number of students and the size of the university vary significantly (probably based on country and population size). The median number of students is 17 000, which means that half of the universities in this rating have less than 17 000 students and half of the universities have more than that number of students. The average share of females is perfect 50%, but it ranges from 1% to 98%
+percents, almost a perfect normal distribution.
+
+* Lastly the distribution of international students is not as normal, it varies from as low as 0% (no international students) to as high as 84%, but the median is 7%.
+
+Now we can explore the correlations of the variables with the help of a correlation plot.
+
+```{r}
+datanum <- data %>% dplyr::select(- name, - location)
+
+colnames(datanum) <- c("Teaching", "Research", "Citations", "Industry income", "International outlook", "Number of students", "Student-staff ratio", "International students %", "Female students %" )
+```
+
+```{r}
+M <- cor(datanum)
+corrplot(M) 
+```
+
+The plot shows that there is a number of correlations between the scores and the statistics, essentially all the scores have either a strong/moderate positive correlation between each other with the exception of Industry income and Citations and Industry income and international outlook.
+
+As for statistics, there are some correlation between the share of international students at the university and all the 5 scores of the rating with the highest correlation with international outlook, as the share of international students is included in the calculation of this score. There is also a slight negative correlation between the share of females and the industry income score which also has to be explored further.
+
+We can explore these correlations further with the help of a correlation matrix:
+
+```{r}
+res <- cor(datanum)
+round(res, 2)
+```
+
+The correlation matrix shows that there is indeed a number of strong/moderate correlations between the variables:
+
+* The correlation between Teaching and Research scores is 0.89. The correlations between Teaching and other scores vary between 0.4 to 0.5. Teaching and Research should probably be dealt with using PCA.
+
+* The correlation between the share of international students and international outlook is 0.82, while for Industry income it is only 0.19. For the remaining 3 scores it is between 0.4 to 0.5 as well for the share of international students.
+
+* The correlation between Industry income and the share of females in a university is -0.26 which is a moderate negative relationship and it would be interesting to explore why (probably not in this project).
+
+
+
+# Principal component analysis
+
+Before proceeding to PCA it is useful to look at the variances of all the numeric variables (scores and statistics). Variables with higher variances will be overrepresented in the result of PCA, so it might be necessary to standardise them before running PCA.
+
+```{r}
+lapply(datanum, var)
+```
+
+variances of some variables are much bigger than those of the others, so it would be nice to standardise the variables to avoid inadequate weighting in PCA.
+
+```{r}
+data_std <- datanum %>% scale() %>% as.data.frame()
+lapply(data_std, var)
+```
+
+Now that the variables are standardised we can proceed to PCA itsef.
+
+```{r include=FALSE}
+pca1 <- prcomp(data_std)
+str(pca1, give.attr = F)
+```
+
+```{r}
+summary(pca1)
+```
+
+By looking at the summary of the PCA it is clear that removing at least one or two of the variables by PCA would totally make sense, since having 7 components would still cover 97.5% of the total variance.
+
+```{r}
+round(pca1$rotation[,1:9], 2)
+```
+
+Looking at the loadings of the components it is also possible to conclude that some variables could be put into components - for instance, the 1st component has moderately high loadings (0.4 or higher) for several variables, including Teaching, Research, Citations, International outlook and the share of international students.
+
+## Is it possible to produce an acceptable PCA solution on these data?
+
+I believe that it is possible to produce at least an acceptable PCA solution on these data since many variables are linearly correlated between each other which is good for PCA as it tries to reduce the number of variables that are correlated and it relies on linearity of these correlations. High variance of one variable over the others might be a problem for PCA and there is one variable that naturally has higher variance because it is the total number of students, while other scores are ratios, but standardisation of variables that was done earlier should deal with this problem to a certain extent.
+
+From the perspective of domain knowledge it also makes sense to use PCA since at least one of the scores (international outlook) includes one other variable from the dataset (the share of international students). 
+
+It also makes sense to assume that the scores for Сitations, Teaching and Research are somehow interdependent in the real world: universities that produce a lot of research are probably cited extensively and it is hard to imagine a university that is extremely good at teaching and extremely bad at research. In some fields constantly updated research in the field is a must for providing high-quality teaching and most universities would probably try to keep up the standards for both areas anyway. 
+
+Preliminary results from the summary of the PCA and the loadings also suggest that there is a way for some PCA solution, as it is possible to reduce the number of variables, but still have an extremely share of total variance (97.5%) explained by the PCA.
+
+## The number of components for PCA
+
+In order to decide how many components should be kept in PCA it is necessary to look at the cummulative variance explained by certain number of components. I will aim for cumulative variance of at least 0.7. The original dataset has 9 variables so the number of components in PCA should definitely be lower than that.
+
+
+The summary output shows that using 3 components would roughly explain 0.7 of the total variance, but I will also use Kaiser-Guttman criterion and a screeplot to check whether 3 components is enough.
+
+```{r}
+summary(pca1)
+```
+
+With Kaiser-Guttman criterion only components with eigenvalue > 1 are included.
+
+```{r}
+pca1$sdev ^ 2
+```
+
+There are exactly 3 components with eigenvalues > 1, so 3 components should probably be okay for PCA.
+
+Lastly, we can check it by drawing a screeplot:
+
+```{r}
+library(stats)
+screeplot(pca1, type = "lines")
+box()
+abline(h = 1, lty = 2)
+```
+
+The most sharp elbow (the decrease in the variance explained) is between 1 and 2 components, but 1 component is not enough for analysis, so the 2nd most sharp elbow occurs after 3 components, so this method also suggest that 3 components is just right.
+
+# PCA results
+
+Now we can visualise the results of PCA in a biplot to see how much variance each component explains and which variables have the highest loadings on each component.
+
+The plot shows components 1 and 2:
+
+```{r}
+pca2d(pca1, biplot = T, biplot.vars = 9)
+```
+
+From the plot it looks like the 1nd component explains more of the total variance as the data points are scattered more with respect to x-axis regardless of the outliers.
+
+In terms of variables it seems like the second component includes number of students, student-staff ration and the percentage of females as eigenvectors for these variables are close to parallel to the y-axis. This component probably deals with the general statitstics about the number of students, staff and females.
+
+The first component includes the rest of the variables (probably with the exception of industry income) as their eigenvectors are close to parallel to x-axis, but it will probably change with the addition of the 3rd component. 
+
+Since it is necessary to add a 3rd dimension to visualise 3-component PCA here is the 3D plot with all the data point scattered in a 3-dimensional plane. 
+
+(It is not displayed in the html unfortunately).
+
+```{r}
+#pca3d
+library(pca3d)
+
+pca3d(pca1, components = 1:3, col = NULL, show.ellipses = T, show.plane = F)
+```
+
+From the picture it is still possible to identify that the first 2 components cover the majority of the data, but there are still some points that are just negatively associated with the 3rd component.
+
+Let's look at the loadings to finally define the components:
+
+```{r}
+round(pca1$rotation[,1:3], 2)
+```
+
+## Components
+
+* The first component has moderately high negative loadings for Teaching, Research, Citations, International outlook and the percentage of international students. This component describes a poor performance of a university overall, being unsuccessful in academic sphere and, as a result, in attracting international students as well (e.g. being not worthy enough to compete with the universities that foreign students have at their home country or not good enough to represent their own country at the international education market).
+
+* The second component has high loading for industry income which is the indicator of how valuable university's research is for industry and a high negative loading for the percentage of females - this factor is really complicated and I do not have any meaningful interpretation for it. Probably it would be better to use these variables separately as they are, otherwise it does not make much sense.
+
+* The third component has high negative loadings for the number of students and the student-staff ratio - this component should probably be university size in terms of students (the smaller the university - the higher this component's value).
+
+
+#  The best universities in the US and Canada
+
+Next we can check whether the best universities are all from the US and Canada - from the components from PCA the 1st one deals with success the most - if a university is low on the 1st component it's generally successful.
+
+For this we add a new column that breaks the countries into 3 groups - US, Canada and the rest. 
+
+```{r}
+data_col <- data %>%
+    mutate(country = case_when(data$location == "United States" ~ "USA",
+                                  data$location == "Canada" ~ "Canada",
+                                  TRUE ~ "Other country"))
+head(data_col, 8)
+
+```
+
+And now we can visualise it in a biplot again with colouring each observation by group (US, Canada, others):
+
+```{r}
+library(ggfortify)
+
+autoplot(pca1, data = data_col, colour = 'country', loadings = TRUE, loadings.label = TRUE, loadings.label.size = 4)
+
+```
+
+The graph shows that American universities are scattered almost across all the x-axis (which is component 1 which defines university's success via inverted relationship), but those who have the highest scores on PC1 (the least successful universities) are all not American or Canadian universities.
+
+There is a number of successful American universities (those blue points that are low on the x-axis), probably these are Harvard, Stanford and MIT, but there are also some universities from other countries as the most successful ones.
+
+As for Canadian universities they are less spread out along the x-axis, so all of them are neither the best nor the worst.
+
+## Conclusion 
+
+The answer to this question of whether the best universities are in Canada or the US it is fair to say that they are definitely not in Canada and some of the best universities are indeed in the US. 
+
+Additionally, it is also safe to say that the worst universities are neither Canadian nor American.
+
+## Alternative hypothesis
+
+Looking at the top 10 of the rating I believe that the statement that the best universities are either in the US or the UK might also be true and is worth checking the same way.
+
+Grouping the variables again:
+
+```{r}
+data_col2 <- data %>%
+    mutate(country = case_when(data$location == "United States" ~ "USA",
+                                  data$location == "United Kingdom" ~ "UK",
+                                  TRUE ~ "Other country"))
+head(data_col2, 8)
+
+```
+
+And plotting the results:
+
+```{r}
+
+autoplot(pca1, data = data_col2, colour = 'country', loadings = TRUE, loadings.label = TRUE, loadings.label.size = 4)
+
+```
+
+The plot shows that the best universities are indeed in the US and the UK.
+
+What is more interesting is that the distribution of American and British universities in relation to those components looks quite similar - most of the universities are somewhere in the average-to-good range and there are some outliers which are the best universities in the world.
+
+What is different though is that the nature of this success might be somewhat different for British and American universities - while American universities are distributed along the **Teaching** and **Research** scores, British universities are distributed along the **International outlook** and **Citations** scores and the **percentage of international students** statistic, which approves my previous knowledge about American and British universities (British universities have more international students, perhaps due to the location and historical connections - they are closer to almost everywhere in the world and some countries, like India were heavily influenced by the UK due to colonisation).
+
